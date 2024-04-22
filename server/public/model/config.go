@@ -43,7 +43,7 @@ const (
 	MinioSecretKey = "miniosecretkey"
 	MinioBucket    = "mattermost-test"
 
-	PasswordMaximumLength = 64
+	PasswordMaximumLength = 72
 	PasswordMinimumLength = 5
 
 	ServiceGitlab    = "gitlab"
@@ -122,7 +122,9 @@ const (
 
 	SqlSettingsDefaultDataSource = "postgres://mmuser:mostest@localhost/mattermost_test?sslmode=disable&connect_timeout=10&binary_parameters=yes"
 
-	FileSettingsDefaultDirectory = "./data/"
+	FileSettingsDefaultDirectory                   = "./data/"
+	FileSettingsDefaultS3UploadPartSizeBytes       = 5 * 1024 * 1024   // 5MB
+	FileSettingsDefaultS3ExportUploadPartSizeBytes = 100 * 1024 * 1024 // 100MB
 
 	ImportSettingsDefaultDirectory     = "./import"
 	ImportSettingsDefaultRetentionDays = 30
@@ -207,12 +209,16 @@ const (
 	BleveSettingsDefaultBatchSize = 10000
 
 	DataRetentionSettingsDefaultMessageRetentionDays           = 365
+	DataRetentionSettingsDefaultMessageRetentionHours          = 0
 	DataRetentionSettingsDefaultFileRetentionDays              = 365
+	DataRetentionSettingsDefaultFileRetentionHours             = 0
 	DataRetentionSettingsDefaultBoardsRetentionDays            = 365
 	DataRetentionSettingsDefaultDeletionJobStartTime           = "02:00"
 	DataRetentionSettingsDefaultBatchSize                      = 3000
 	DataRetentionSettingsDefaultTimeBetweenBatchesMilliseconds = 100
 	DataRetentionSettingsDefaultRetentionIdsBatchSize          = 100
+
+	OutgoingIntegrationRequestsDefaultTimeout = 30
 
 	PluginSettingsDefaultDirectory         = "./plugins"
 	PluginSettingsDefaultClientDirectory   = "./client/plugins"
@@ -308,7 +314,9 @@ type ServiceSettings struct {
 	EnableOAuthServiceProvider          *bool    `access:"integrations_integration_management"`
 	EnableIncomingWebhooks              *bool    `access:"integrations_integration_management"`
 	EnableOutgoingWebhooks              *bool    `access:"integrations_integration_management"`
+	EnableOutgoingOAuthConnections      *bool    `access:"integrations_integration_management"`
 	EnableCommands                      *bool    `access:"integrations_integration_management"`
+	OutgoingIntegrationRequestsTimeout  *int64   `access:"integrations_integration_management"` // In seconds.
 	EnablePostUsernameOverride          *bool    `access:"integrations_integration_management"`
 	EnablePostIconOverride              *bool    `access:"integrations_integration_management"`
 	GoogleDeveloperKey                  *string  `access:"site_posts,write_restrictable,cloud_restrictable"`
@@ -399,6 +407,7 @@ type ServiceSettings struct {
 	AllowSyncedDrafts                                 *bool   `access:"site_posts"`
 	UniqueEmojiReactionLimitPerPost                   *int    `access:"site_posts"`
 	RefreshPostStatsRunTime                           *string `access:"site_users_and_teams"`
+	MaximumPayloadSizeBytes                           *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
 }
 
 var MattermostGiphySdkKey string
@@ -507,6 +516,14 @@ func (s *ServiceSettings) SetDefaults(isUpdate bool) {
 
 	if s.EnableOutgoingWebhooks == nil {
 		s.EnableOutgoingWebhooks = NewBool(true)
+	}
+
+	if s.EnableOutgoingOAuthConnections == nil {
+		s.EnableOutgoingOAuthConnections = NewBool(false)
+	}
+
+	if s.OutgoingIntegrationRequestsTimeout == nil {
+		s.OutgoingIntegrationRequestsTimeout = NewInt64(OutgoingIntegrationRequestsDefaultTimeout)
 	}
 
 	if s.ConnectionSecurity == nil {
@@ -901,6 +918,10 @@ func (s *ServiceSettings) SetDefaults(isUpdate bool) {
 	if s.RefreshPostStatsRunTime == nil {
 		s.RefreshPostStatsRunTime = NewString("00:00")
 	}
+
+	if s.MaximumPayloadSizeBytes == nil {
+		s.MaximumPayloadSizeBytes = NewInt64(300000)
+	}
 }
 
 type ClusterSettings struct {
@@ -915,10 +936,6 @@ type ClusterSettings struct {
 	EnableExperimentalGossipEncryption *bool   `access:"environment_high_availability,write_restrictable,cloud_restrictable"`
 	ReadOnlyConfig                     *bool   `access:"environment_high_availability,write_restrictable,cloud_restrictable"`
 	GossipPort                         *int    `access:"environment_high_availability,write_restrictable,cloud_restrictable"` // telemetry: none
-	StreamingPort                      *int    `access:"environment_high_availability,write_restrictable,cloud_restrictable"` // telemetry: none
-	MaxIdleConns                       *int    `access:"environment_high_availability,write_restrictable,cloud_restrictable"` // telemetry: none
-	MaxIdleConnsPerHost                *int    `access:"environment_high_availability,write_restrictable,cloud_restrictable"` // telemetry: none
-	IdleConnTimeoutMilliseconds        *int    `access:"environment_high_availability,write_restrictable,cloud_restrictable"` // telemetry: none
 }
 
 func (s *ClusterSettings) SetDefaults() {
@@ -965,22 +982,6 @@ func (s *ClusterSettings) SetDefaults() {
 	if s.GossipPort == nil {
 		s.GossipPort = NewInt(8074)
 	}
-
-	if s.StreamingPort == nil {
-		s.StreamingPort = NewInt(8075)
-	}
-
-	if s.MaxIdleConns == nil {
-		s.MaxIdleConns = NewInt(100)
-	}
-
-	if s.MaxIdleConnsPerHost == nil {
-		s.MaxIdleConnsPerHost = NewInt(128)
-	}
-
-	if s.IdleConnTimeoutMilliseconds == nil {
-		s.IdleConnTimeoutMilliseconds = NewInt(90000)
-	}
 }
 
 type MetricsSettings struct {
@@ -1008,7 +1009,6 @@ type ExperimentalSettings struct {
 	ClientSideCertCheck             *string `access:"experimental_features,cloud_restrictable"`
 	LinkMetadataTimeoutMilliseconds *int64  `access:"experimental_features,write_restrictable,cloud_restrictable"`
 	RestrictSystemAdmin             *bool   `access:"experimental_features,write_restrictable"`
-	UseNewSAMLLibrary               *bool   `access:"experimental_features,cloud_restrictable"`
 	EnableSharedChannels            *bool   `access:"experimental_features"`
 	EnableRemoteClusterService      *bool   `access:"experimental_features"`
 	DisableAppBar                   *bool   `access:"experimental_features"`
@@ -1031,10 +1031,6 @@ func (s *ExperimentalSettings) SetDefaults() {
 
 	if s.RestrictSystemAdmin == nil {
 		s.RestrictSystemAdmin = NewBool(false)
-	}
-
-	if s.UseNewSAMLLibrary == nil {
-		s.UseNewSAMLLibrary = NewBool(false)
 	}
 
 	if s.EnableSharedChannels == nil {
@@ -1580,22 +1576,24 @@ type FileSettings struct {
 	AmazonS3SSE                        *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
 	AmazonS3Trace                      *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
 	AmazonS3RequestTimeoutMilliseconds *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
+	AmazonS3UploadPartSizeBytes        *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
 	// Export store settings
-	DedicatedExportStore                     *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportDriverName                         *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportDirectory                          *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3AccessKeyId                *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3SecretAccessKey            *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3Bucket                     *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3PathPrefix                 *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3Region                     *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3Endpoint                   *string `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3SSL                        *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportAmazonS3SignV2                     *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportAmazonS3SSE                        *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportAmazonS3Trace                      *bool   `access:"environment_file_storage,write_restrictable,cloud_restrictable"`
-	ExportAmazonS3RequestTimeoutMilliseconds *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
-	ExportAmazonS3PresignExpiresSeconds      *int64  `access:"environment_file_storage,write_restrictable,cloud_restrictable"` // telemetry: none
+	DedicatedExportStore                     *bool   `access:"environment_file_storage,write_restrictable"`
+	ExportDriverName                         *string `access:"environment_file_storage,write_restrictable"`
+	ExportDirectory                          *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3AccessKeyId                *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3SecretAccessKey            *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3Bucket                     *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3PathPrefix                 *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3Region                     *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3Endpoint                   *string `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3SSL                        *bool   `access:"environment_file_storage,write_restrictable"`
+	ExportAmazonS3SignV2                     *bool   `access:"environment_file_storage,write_restrictable"`
+	ExportAmazonS3SSE                        *bool   `access:"environment_file_storage,write_restrictable"`
+	ExportAmazonS3Trace                      *bool   `access:"environment_file_storage,write_restrictable"`
+	ExportAmazonS3RequestTimeoutMilliseconds *int64  `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3PresignExpiresSeconds      *int64  `access:"environment_file_storage,write_restrictable"` // telemetry: none
+	ExportAmazonS3UploadPartSizeBytes        *int64  `access:"environment_file_storage,write_restrictable"` // telemetry: none
 }
 
 func (s *FileSettings) SetDefaults(isUpdate bool) {
@@ -1704,6 +1702,10 @@ func (s *FileSettings) SetDefaults(isUpdate bool) {
 		s.AmazonS3RequestTimeoutMilliseconds = NewInt64(30000)
 	}
 
+	if s.AmazonS3UploadPartSizeBytes == nil {
+		s.AmazonS3UploadPartSizeBytes = NewInt64(FileSettingsDefaultS3UploadPartSizeBytes)
+	}
+
 	if s.DedicatedExportStore == nil {
 		s.DedicatedExportStore = NewBool(false)
 	}
@@ -1764,6 +1766,10 @@ func (s *FileSettings) SetDefaults(isUpdate bool) {
 
 	if s.ExportAmazonS3PresignExpiresSeconds == nil {
 		s.ExportAmazonS3PresignExpiresSeconds = NewInt64(21600) // 6h
+	}
+
+	if s.ExportAmazonS3UploadPartSizeBytes == nil {
+		s.ExportAmazonS3UploadPartSizeBytes = NewInt64(FileSettingsDefaultS3ExportUploadPartSizeBytes)
 	}
 }
 
@@ -2899,8 +2905,10 @@ type DataRetentionSettings struct {
 	EnableMessageDeletion          *bool   `access:"compliance_data_retention_policy"`
 	EnableFileDeletion             *bool   `access:"compliance_data_retention_policy"`
 	EnableBoardsDeletion           *bool   `access:"compliance_data_retention_policy"`
-	MessageRetentionDays           *int    `access:"compliance_data_retention_policy"`
-	FileRetentionDays              *int    `access:"compliance_data_retention_policy"`
+	MessageRetentionDays           *int    `access:"compliance_data_retention_policy"` // Deprecated: use `MessageRetentionHours`
+	MessageRetentionHours          *int    `access:"compliance_data_retention_policy"`
+	FileRetentionDays              *int    `access:"compliance_data_retention_policy"` // Deprecated: use `FileRetentionHours`
+	FileRetentionHours             *int    `access:"compliance_data_retention_policy"`
 	BoardsRetentionDays            *int    `access:"compliance_data_retention_policy"`
 	DeletionJobStartTime           *string `access:"compliance_data_retention_policy"`
 	BatchSize                      *int    `access:"compliance_data_retention_policy"`
@@ -2925,8 +2933,16 @@ func (s *DataRetentionSettings) SetDefaults() {
 		s.MessageRetentionDays = NewInt(DataRetentionSettingsDefaultMessageRetentionDays)
 	}
 
+	if s.MessageRetentionHours == nil {
+		s.MessageRetentionHours = NewInt(DataRetentionSettingsDefaultMessageRetentionHours)
+	}
+
 	if s.FileRetentionDays == nil {
 		s.FileRetentionDays = NewInt(DataRetentionSettingsDefaultFileRetentionDays)
+	}
+
+	if s.FileRetentionHours == nil {
+		s.FileRetentionHours = NewInt(DataRetentionSettingsDefaultFileRetentionHours)
 	}
 
 	if s.BoardsRetentionDays == nil {
@@ -2947,6 +2963,30 @@ func (s *DataRetentionSettings) SetDefaults() {
 	if s.RetentionIdsBatchSize == nil {
 		s.RetentionIdsBatchSize = NewInt(DataRetentionSettingsDefaultRetentionIdsBatchSize)
 	}
+}
+
+// GetMessageRetentionHours returns the message retention time as an int.
+// MessageRetentionHours takes precedence over the deprecated MessageRetentionDays.
+func (s *DataRetentionSettings) GetMessageRetentionHours() int {
+	if s.MessageRetentionHours != nil && *s.MessageRetentionHours > 0 {
+		return *s.MessageRetentionHours
+	}
+	if s.MessageRetentionDays != nil && *s.MessageRetentionDays > 0 {
+		return *s.MessageRetentionDays * 24
+	}
+	return DataRetentionSettingsDefaultMessageRetentionDays * 24
+}
+
+// GetFileRetentionHours returns the message retention time as an int.
+// FileRetentionHours takes precedence over the deprecated FileRetentionDays.
+func (s *DataRetentionSettings) GetFileRetentionHours() int {
+	if s.FileRetentionHours != nil && *s.FileRetentionHours > 0 {
+		return *s.FileRetentionHours
+	}
+	if s.FileRetentionDays != nil && *s.FileRetentionDays > 0 {
+		return *s.FileRetentionDays * 24
+	}
+	return DataRetentionSettingsDefaultFileRetentionDays * 24
 }
 
 type JobSettings struct {
@@ -2978,19 +3018,22 @@ type CloudSettings struct {
 	CWSURL    *string `access:"write_restrictable"`
 	CWSAPIURL *string `access:"write_restrictable"`
 	CWSMock   *bool   `access:"write_restrictable"`
+	Disable   *bool   `access:"write_restrictable,cloud_restrictable"`
 }
 
 func (s *CloudSettings) SetDefaults() {
-	if s.CWSURL == nil {
-		switch GetServiceEnvironment() {
+	serviceEnvironment := GetServiceEnvironment()
+	if s.CWSURL == nil || serviceEnvironment == ServiceEnvironmentProduction {
+		switch serviceEnvironment {
 		case ServiceEnvironmentProduction:
 			s.CWSURL = NewString(CloudSettingsDefaultCwsURL)
 		case ServiceEnvironmentTest, ServiceEnvironmentDev:
 			s.CWSURL = NewString(CloudSettingsDefaultCwsURLTest)
 		}
 	}
+
 	if s.CWSAPIURL == nil {
-		switch GetServiceEnvironment() {
+		switch serviceEnvironment {
 		case ServiceEnvironmentProduction:
 			s.CWSAPIURL = NewString(CloudSettingsDefaultCwsAPIURL)
 		case ServiceEnvironmentTest, ServiceEnvironmentDev:
@@ -3000,6 +3043,10 @@ func (s *CloudSettings) SetDefaults() {
 	if s.CWSMock == nil {
 		isMockCws := MockCWS == "true"
 		s.CWSMock = &isMockCws
+	}
+
+	if s.Disable == nil {
+		s.Disable = NewBool(false)
 	}
 }
 
@@ -3441,7 +3488,7 @@ type Config struct {
 	DataRetentionSettings     DataRetentionSettings
 	MessageExportSettings     MessageExportSettings
 	JobSettings               JobSettings
-	ProductSettings           ProductSettings
+	ProductSettings           ProductSettings // Deprecated: Remove in next major version:: https://mattermost.atlassian.net/browse/MM-56655
 	PluginSettings            PluginSettings
 	DisplaySettings           DisplaySettings
 	GuestAccountsSettings     GuestAccountsSettings
@@ -3971,6 +4018,10 @@ func (s *ServiceSettings) isValid() *AppError {
 		}
 	}
 
+	if *s.MaximumPayloadSizeBytes <= 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.max_payload_size.app_error", nil, "", http.StatusBadRequest)
+	}
+
 	if *s.ReadTimeout <= 0 {
 		return NewAppError("Config.IsValid", "model.config.is_valid.read_timeout.app_error", nil, "", http.StatusBadRequest)
 	}
@@ -4009,6 +4060,10 @@ func (s *ServiceSettings) isValid() *AppError {
 	portInt, err := strconv.Atoi(port)
 	if err != nil || !isValidHost || portInt < 0 || portInt > math.MaxUint16 {
 		return NewAppError("Config.IsValid", "model.config.is_valid.listen_address.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if *s.OutgoingIntegrationRequestsTimeout <= 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.outgoing_integrations_request_timeout.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if *s.ExperimentalGroupUnreadChannels != GroupUnreadChannelsDisabled &&
@@ -4121,12 +4176,36 @@ func (bs *BleveSettings) isValid() *AppError {
 }
 
 func (s *DataRetentionSettings) isValid() *AppError {
-	if *s.MessageRetentionDays <= 0 {
+	if s.MessageRetentionDays == nil || *s.MessageRetentionDays < 0 {
 		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.message_retention_days_too_low.app_error", nil, "", http.StatusBadRequest)
 	}
 
-	if *s.FileRetentionDays <= 0 {
+	if s.MessageRetentionHours == nil || *s.MessageRetentionHours < 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.message_retention_hours_too_low.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if s.FileRetentionDays == nil || *s.FileRetentionDays < 0 {
 		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.file_retention_days_too_low.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if s.FileRetentionHours == nil || *s.FileRetentionHours < 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.file_retention_hours_too_low.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if *s.MessageRetentionDays > 0 && *s.MessageRetentionHours > 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.message_retention_misconfiguration.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if *s.FileRetentionDays > 0 && *s.FileRetentionHours > 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.file_retention_misconfiguration.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if *s.MessageRetentionDays == 0 && *s.MessageRetentionHours == 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.message_retention_both_zero.app_error", nil, "", http.StatusBadRequest)
+	}
+
+	if *s.FileRetentionDays == 0 && *s.FileRetentionHours == 0 {
+		return NewAppError("Config.IsValid", "model.config.is_valid.data_retention.file_retention_both_zero.app_error", nil, "", http.StatusBadRequest)
 	}
 
 	if _, err := time.Parse("15:04", *s.DeletionJobStartTime); err != nil {
@@ -4286,6 +4365,10 @@ func (o *Config) Sanitize() {
 		o.SqlSettings.DataSourceSearchReplicas[i] = FakeSetting
 	}
 
+	for i := range o.SqlSettings.ReplicaLagSettings {
+		o.SqlSettings.ReplicaLagSettings[i].DataSource = NewString(FakeSetting)
+	}
+
 	if o.MessageExportSettings.GlobalRelaySettings != nil &&
 		o.MessageExportSettings.GlobalRelaySettings.SMTPPassword != nil &&
 		*o.MessageExportSettings.GlobalRelaySettings.SMTPPassword != "" {
@@ -4417,9 +4500,8 @@ func isSafeLink(link *string) bool {
 			return true
 		} else if strings.HasPrefix(*link, "/") {
 			return true
-		} else {
-			return false
 		}
+		return false
 	}
 
 	return true

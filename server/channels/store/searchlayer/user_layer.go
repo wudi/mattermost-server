@@ -81,11 +81,8 @@ func (s *SearchUserStore) Update(rctx request.CTX, user *model.User, trustedUpda
 	return userUpdate, err
 }
 
-func (s *SearchUserStore) Save(user *model.User) (*model.User, error) {
-	// TODO: Use the actuall request context from the App layer
-	// https://mattermost.atlassian.net/browse/MM-55737
-	rctx := request.EmptyContext(s.rootStore.Logger())
-	nuser, err := s.UserStore.Save(user)
+func (s *SearchUserStore) Save(rctx request.CTX, user *model.User) (*model.User, error) {
+	nuser, err := s.UserStore.Save(rctx, user)
 
 	if err == nil {
 		s.rootStore.indexUser(rctx, nuser)
@@ -122,17 +119,17 @@ func (s *SearchUserStore) autocompleteUsersInChannelByEngine(engine searchengine
 		return nil, err
 	}
 
-	uchan := make(chan store.GenericStoreResult[[]*model.User], 1)
+	uchan := make(chan store.StoreResult[[]*model.User], 1)
 	go func() {
 		users, nErr := s.UserStore.GetProfileByIds(context.Background(), uchanIds, nil, false)
-		uchan <- store.GenericStoreResult[[]*model.User]{Data: users, NErr: nErr}
+		uchan <- store.StoreResult[[]*model.User]{Data: users, NErr: nErr}
 		close(uchan)
 	}()
 
-	nuchan := make(chan store.GenericStoreResult[[]*model.User], 1)
+	nuchan := make(chan store.StoreResult[[]*model.User], 1)
 	go func() {
 		users, nErr := s.UserStore.GetProfileByIds(context.Background(), nuchanIds, nil, false)
-		nuchan <- store.GenericStoreResult[[]*model.User]{Data: users, NErr: nErr}
+		nuchan <- store.StoreResult[[]*model.User]{Data: users, NErr: nErr}
 		close(nuchan)
 	}()
 

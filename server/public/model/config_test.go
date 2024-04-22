@@ -74,6 +74,47 @@ func TestConfigEmptySiteName(t *testing.T) {
 	require.Equal(t, *c1.TeamSettings.SiteName, TeamSettingsDefaultSiteName)
 }
 
+func TestServiceSettingsIsValid(t *testing.T) {
+	for name, test := range map[string]struct {
+		ServiceSettings ServiceSettings
+		ExpectError     bool
+	}{
+		"empty": {
+			ServiceSettings: ServiceSettings{},
+			ExpectError:     false,
+		},
+		"OutgoingIntegrationRequestsTimeout is negative": {
+			ServiceSettings: ServiceSettings{
+				OutgoingIntegrationRequestsTimeout: NewInt64(-1),
+			},
+			ExpectError: true,
+		},
+		"OutgoingIntegrationRequestsTimeout is zero": {
+			ServiceSettings: ServiceSettings{
+				OutgoingIntegrationRequestsTimeout: NewInt64(0),
+			},
+			ExpectError: true,
+		},
+		"OutgoingIntegrationRequestsTimeout is positiv": {
+			ServiceSettings: ServiceSettings{
+				OutgoingIntegrationRequestsTimeout: NewInt64(1),
+			},
+			ExpectError: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			test.ServiceSettings.SetDefaults(false)
+
+			appErr := test.ServiceSettings.isValid()
+			if test.ExpectError {
+				assert.NotNil(t, appErr)
+			} else {
+				assert.Nil(t, appErr)
+			}
+		})
+	}
+}
+
 func TestConfigEnableDeveloper(t *testing.T) {
 	testCases := []struct {
 		Description     string
@@ -1346,6 +1387,11 @@ func TestConfigSanitize(t *testing.T) {
 	*c.OpenIdSettings.Secret = "secret"
 	c.SqlSettings.DataSourceReplicas = []string{"stuff"}
 	c.SqlSettings.DataSourceSearchReplicas = []string{"stuff"}
+	c.SqlSettings.ReplicaLagSettings = []*ReplicaLagSettings{{
+		DataSource:       NewString("DataSource"),
+		QueryAbsoluteLag: NewString("QueryAbsoluteLag"),
+		QueryTimeLag:     NewString("QueryTimeLag"),
+	}}
 
 	c.Sanitize()
 
@@ -1360,6 +1406,19 @@ func TestConfigSanitize(t *testing.T) {
 	assert.Equal(t, FakeSetting, *c.ElasticsearchSettings.Password)
 	assert.Equal(t, FakeSetting, c.SqlSettings.DataSourceReplicas[0])
 	assert.Equal(t, FakeSetting, c.SqlSettings.DataSourceSearchReplicas[0])
+
+	require.Len(t, c.SqlSettings.ReplicaLagSettings, 1)
+	assert.Equal(t, FakeSetting, *c.SqlSettings.ReplicaLagSettings[0].DataSource)
+	assert.Equal(t, "QueryAbsoluteLag", *c.SqlSettings.ReplicaLagSettings[0].QueryAbsoluteLag)
+	assert.Equal(t, "QueryTimeLag", *c.SqlSettings.ReplicaLagSettings[0].QueryTimeLag)
+
+	t.Run("with default config", func(t *testing.T) {
+		c := Config{}
+		c.SetDefaults()
+		c.Sanitize()
+
+		assert.Len(t, c.SqlSettings.ReplicaLagSettings, 0)
+	})
 }
 
 func TestConfigFilteredByTag(t *testing.T) {
@@ -1605,4 +1664,106 @@ func TestConfigDefaultCallsPluginState(t *testing.T) {
 		c1.SetDefaults()
 		assert.False(t, c1.PluginSettings.PluginStates["com.mattermost.calls"].Enable)
 	})
+}
+
+func TestConfigGetMessageRetentionHours(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		value  int
+	}{
+		{
+			name:   "should return MessageRetentionDays config value in hours by default",
+			config: Config{},
+			value:  8760,
+		},
+		{
+			name: "should return MessageRetentionHours config value",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					MessageRetentionHours: NewInt(48),
+				},
+			},
+			value: 48,
+		},
+		{
+			name: "should return MessageRetentionHours config value",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					MessageRetentionDays:  NewInt(50),
+					MessageRetentionHours: NewInt(48),
+				},
+			},
+			value: 48,
+		},
+		{
+			name: "should return MessageRetentionDays config value in hours",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					MessageRetentionDays:  NewInt(50),
+					MessageRetentionHours: NewInt(0),
+				},
+			},
+			value: 1200,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.config.SetDefaults()
+
+			require.Equal(t, test.value, test.config.DataRetentionSettings.GetMessageRetentionHours())
+		})
+	}
+}
+
+func TestConfigGetFileRetentionHours(t *testing.T) {
+	tests := []struct {
+		name   string
+		config Config
+		value  int
+	}{
+		{
+			name:   "should return FileRetentionDays config value in hours by default",
+			config: Config{},
+			value:  8760,
+		},
+		{
+			name: "should return FileRetentionHours config value",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					FileRetentionHours: NewInt(48),
+				},
+			},
+			value: 48,
+		},
+		{
+			name: "should return FileRetentionHours config value",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					FileRetentionDays:  NewInt(50),
+					FileRetentionHours: NewInt(48),
+				},
+			},
+			value: 48,
+		},
+		{
+			name: "should return FileRetentionDays config value in hours",
+			config: Config{
+				DataRetentionSettings: DataRetentionSettings{
+					FileRetentionDays:  NewInt(50),
+					FileRetentionHours: NewInt(0),
+				},
+			},
+			value: 1200,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.config.SetDefaults()
+
+			require.Equal(t, test.value, test.config.DataRetentionSettings.GetFileRetentionHours())
+		})
+	}
 }

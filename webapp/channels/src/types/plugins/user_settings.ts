@@ -11,7 +11,25 @@ export type PluginConfiguration = {
 
     /** URL to the icon to show in the UI. No icon will show the plug outline icon. */
     icon?: string;
+
+    /** Action that will appear at the beginning of the plugin settings tab */
+    action?: PluginConfigurationAction;
     sections: PluginConfigurationSection[];
+}
+
+export type PluginConfigurationAction = {
+
+    /** Text shown as the title of the action */
+    title: string;
+
+    /** Text shown as the body of the action */
+    text: string;
+
+    /** Text shown at the button */
+    buttonText: string;
+
+    /** This function is called when the button on the action is clicked */
+    onClick: () => void;
 }
 
 export type PluginConfigurationSection = {
@@ -19,6 +37,9 @@ export type PluginConfigurationSection = {
 
     /** The title of the section. All titles must be different. */
     title: string;
+
+    /** Whether the section is disabled. */
+    disabled?: boolean;
 
     /**
      * This function will be called whenever a section is saved.
